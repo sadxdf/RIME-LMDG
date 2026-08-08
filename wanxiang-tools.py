@@ -409,9 +409,10 @@ def _seg_has_tone(root: str) -> bool:
     """判断拼音音节是否已带声调标记（已有声调则不再改动）。"""
     return any(c in TONE_CHARS for c in root)
 
-def _tone_only_segs(char_py: List[str], segs: List[str]) -> List[str]:
-    """只添加声调：保留词库原拼音（含辅助码后缀），仅当原拼音与
-    pypinyin 的无声调形式一致时才补上声调标记，其余一律不动，
+def _tone_only_segs(char_py_multi: List[List[str]], segs: List[str]) -> List[str]:
+    """只添加声调：保留词库原拼音（含辅助码后缀）。对每个音节逐个尝试
+    pypinyin 返回的全部读音（多音字），只要某个读音的无声调形式与原拼音
+    一致就补上该读音的声调；找不到匹配或原拼音已带声调则保持原样，
     避免多音字/自定义读音被 pypinyin 改写。"""
     def toneless(p: str) -> str:
         # 兼容数字声调（如 bian1），仅用于比对
@@ -420,21 +421,32 @@ def _tone_only_segs(char_py: List[str], segs: List[str]) -> List[str]:
     for i, seg in enumerate(segs):
         root = re.split(AUX_SEP_REGEX, seg)[0]
         suffix = seg[len(root):]
-        if (i < len(char_py) and not _seg_has_tone(root)
-                and toneless(root) == toneless(char_py[i])):
-            new_segs.append(char_py[i] + suffix)
+        matched = None
+        if i < len(char_py_multi) and not _seg_has_tone(root):
+            for cand in char_py_multi[i]:
+                if toneless(root) == toneless(cand):
+                    matched = cand
+                    break
+        if matched is not None:
+            new_segs.append(matched + suffix)
         else:
             new_segs.append(seg)
-    # 原拼音缺失的音节，按 pypinyin 补全（无可保留的拼音）
-    for i in range(len(segs), len(char_py)):
-        new_segs.append(char_py[i])
+    # 原拼音缺失的音节，按 pypinyin 首个读音补全（无可保留的拼音）
+    for i in range(len(segs), len(char_py_multi)):
+        new_segs.append(char_py_multi[i][0])
     return new_segs
 
 def pinyin_normal_line(cols: List[str], ignore_non_chinese: bool, py_sep: str, tone_only: bool = False) -> Tuple[str, bool]:
     src = '\t'.join(cols)
     original_word = cols[0]
     word_for_pinyin = filter_non_chinese(original_word) if ignore_non_chinese else original_word
-    char_py = [p[0] for p in pypinyin_func(word_for_pinyin, style=Style.TONE, heteronym=False, errors='default')]
+    if tone_only:
+        # 只添加声调需要全部读音（多音字按原拼音逐个匹配）
+        char_py_multi = pypinyin_func(word_for_pinyin, style=Style.TONE, heteronym=True, errors='default')
+        char_py = [p[0] for p in char_py_multi]
+    else:
+        char_py = [p[0] for p in pypinyin_func(word_for_pinyin, style=Style.TONE, heteronym=False, errors='default')]
+        char_py_multi = None
 
     if len(cols) == 1:
         newline = '\t'.join([original_word, py_sep.join(char_py)])
@@ -445,7 +457,7 @@ def pinyin_normal_line(cols: List[str], ignore_non_chinese: bool, py_sep: str, t
 
     segs = cols[1].split()
     if tone_only:
-        new_segs = _tone_only_segs(char_py, segs)
+        new_segs = _tone_only_segs(char_py_multi, segs)
     else:
         new_segs = []
         for i, py in enumerate(char_py):
@@ -464,10 +476,15 @@ def pinyin_userdb_line(cols: List[str], ignore_non_chinese: bool, py_sep: str, t
     segs = cols[0].split()
     original_word = cols[1]
     word_for_pinyin = filter_non_chinese(original_word) if ignore_non_chinese else original_word
-    char_py = [p[0] for p in pypinyin_func(word_for_pinyin, style=Style.TONE, heteronym=False, errors='default')]
+    if tone_only:
+        # 只添加声调需要全部读音（多音字按原拼音逐个匹配）
+        char_py_multi = pypinyin_func(word_for_pinyin, style=Style.TONE, heteronym=True, errors='default')
+        char_py = [p[0] for p in char_py_multi]
+    else:
+        char_py = [p[0] for p in pypinyin_func(word_for_pinyin, style=Style.TONE, heteronym=False, errors='default')]
 
     if tone_only:
-        new_segs = _tone_only_segs(char_py, segs)
+        new_segs = _tone_only_segs(char_py_multi, segs)
     else:
         new_segs = []
         for i, seg in enumerate(segs):
@@ -2965,7 +2982,8 @@ class MainWin(AdvancedSettingsMixin, QWidget):
         lay.addLayout(hbox2)
 
         tip = QLabel("说明：只给词库已有的拼音补上声调标记，不重新生成拼音。\n"
-                     "当原拼音与 pypinyin 读音不一致时（多音字、人名地名、自定义读音等），保持原拼音不变。")
+                     "多音字会自动匹配读音补声调（如：雾都 wu du → wù dū）；若所有读音都不匹配"
+                     "（人名地名、自定义读音等），保持原拼音不变。")
         tip.setStyleSheet("color:gray;")
         tip.setWordWrap(True)
         lay.addWidget(tip)
