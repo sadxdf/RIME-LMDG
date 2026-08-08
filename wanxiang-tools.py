@@ -403,7 +403,34 @@ CHINESE_PATTERN = re.compile(r'[^\u4E00-\u9FFF\u3400-\u4DBF\U00020000-\U0002A6DF
 def filter_non_chinese(word: str) -> str:
     return CHINESE_PATTERN.sub('', word)
 
-def pinyin_normal_line(cols: List[str], ignore_non_chinese: bool, py_sep: str) -> Tuple[str, bool]:
+TONE_CHARS = "āáǎàōóǒòēéěèīíǐìūúǔùǖǘǚǜ"
+
+def _seg_has_tone(root: str) -> bool:
+    """判断拼音音节是否已带声调标记（已有声调则不再改动）。"""
+    return any(c in TONE_CHARS for c in root)
+
+def _tone_only_segs(char_py: List[str], segs: List[str]) -> List[str]:
+    """只添加声调：保留词库原拼音（含辅助码后缀），仅当原拼音与
+    pypinyin 的无声调形式一致时才补上声调标记，其余一律不动，
+    避免多音字/自定义读音被 pypinyin 改写。"""
+    def toneless(p: str) -> str:
+        # 兼容数字声调（如 bian1），仅用于比对
+        return re.sub(r'[1-5]$', '', clean_pinyin(p))
+    new_segs = []
+    for i, seg in enumerate(segs):
+        root = re.split(AUX_SEP_REGEX, seg)[0]
+        suffix = seg[len(root):]
+        if (i < len(char_py) and not _seg_has_tone(root)
+                and toneless(root) == toneless(char_py[i])):
+            new_segs.append(char_py[i] + suffix)
+        else:
+            new_segs.append(seg)
+    # 原拼音缺失的音节，按 pypinyin 补全（无可保留的拼音）
+    for i in range(len(segs), len(char_py)):
+        new_segs.append(char_py[i])
+    return new_segs
+
+def pinyin_normal_line(cols: List[str], ignore_non_chinese: bool, py_sep: str, tone_only: bool = False) -> Tuple[str, bool]:
     src = '\t'.join(cols)
     original_word = cols[0]
     word_for_pinyin = filter_non_chinese(original_word) if ignore_non_chinese else original_word
@@ -417,31 +444,37 @@ def pinyin_normal_line(cols: List[str], ignore_non_chinese: bool, py_sep: str) -
         return newline, (newline != src)
 
     segs = cols[1].split()
-    new_segs = []
-    for i, py in enumerate(char_py):
-        if i < len(segs):
-            root = re.split(AUX_SEP_REGEX, segs[i])[0]
-            suffix = segs[i][len(root):]
-        else:
-            suffix = ''
-        new_segs.append(py + suffix)
+    if tone_only:
+        new_segs = _tone_only_segs(char_py, segs)
+    else:
+        new_segs = []
+        for i, py in enumerate(char_py):
+            if i < len(segs):
+                root = re.split(AUX_SEP_REGEX, segs[i])[0]
+                suffix = segs[i][len(root):]
+            else:
+                suffix = ''
+            new_segs.append(py + suffix)
     new_cols = list(cols); new_cols[1] = ' '.join(new_segs)
     newline = '\t'.join(new_cols)
     return newline, (newline != src)
 
-def pinyin_userdb_line(cols: List[str], ignore_non_chinese: bool, py_sep: str) -> Tuple[str, bool]:
+def pinyin_userdb_line(cols: List[str], ignore_non_chinese: bool, py_sep: str, tone_only: bool = False) -> Tuple[str, bool]:
     src = '\t'.join(cols)
     segs = cols[0].split()
     original_word = cols[1]
     word_for_pinyin = filter_non_chinese(original_word) if ignore_non_chinese else original_word
     char_py = [p[0] for p in pypinyin_func(word_for_pinyin, style=Style.TONE, heteronym=False, errors='default')]
 
-    new_segs = []
-    for i, seg in enumerate(segs):
-        base_py = char_py[i] if i < len(char_py) else tone_mark(seg)
-        root    = re.split(AUX_SEP_REGEX, seg)[0]
-        suffix  = seg[len(root):]
-        new_segs.append(base_py + suffix)
+    if tone_only:
+        new_segs = _tone_only_segs(char_py, segs)
+    else:
+        new_segs = []
+        for i, seg in enumerate(segs):
+            base_py = char_py[i] if i < len(char_py) else tone_mark(seg)
+            root    = re.split(AUX_SEP_REGEX, seg)[0]
+            suffix  = seg[len(root):]
+            new_segs.append(base_py + suffix)
 
     seg_join = py_sep.join(new_segs)
     if not seg_join.endswith(' '): seg_join += ' '
@@ -449,7 +482,8 @@ def pinyin_userdb_line(cols: List[str], ignore_non_chinese: bool, py_sep: str) -
     return newline, (newline != src)
 
 def pinyin_process_single_file(
-    src: str, dst: str, skip_set: Set[str], ignore_non_chinese: bool, py_sep: str, 
+    src: str, dst: str, skip_set: Set[str], ignore_non_chinese: bool, py_sep: str,
+    tone_only: bool = False,
     should_stop: Optional[Callable[[], bool]] = None,
     progress_cb: Optional[Callable[[int], None]] = None # [新增参数]
 ) -> Tuple[int, int]:
@@ -479,9 +513,9 @@ def pinyin_process_single_file(
 
             cols = line.split('\t')
             if userdb and len(cols) >= 3:
-                newline, ch = pinyin_userdb_line(cols, ignore_non_chinese, py_sep)
+                newline, ch = pinyin_userdb_line(cols, ignore_non_chinese, py_sep, tone_only)
             else:
-                newline, ch = pinyin_normal_line(cols, ignore_non_chinese, py_sep)
+                newline, ch = pinyin_normal_line(cols, ignore_non_chinese, py_sep, tone_only)
             if ch: changed += 1
             d.write(newline + '\n')
     return total, changed
@@ -653,6 +687,7 @@ class JobArgs:
     skip_set: Optional[Set[str]] = None
     ignore_non_chinese: bool = True
     py_sep: Optional[str] = None
+    tone_only: bool = False # 只添加声调（保留原拼音）
     sp_schema: Optional[str] = None # 双拼转换方案key
     sp_out_sep: Optional[str] = None #双拼转换输出分隔符
     sp_is_jianma: bool = False # 是否输出简码
@@ -763,7 +798,7 @@ class Worker(QThread):
                 try:
                     # 传入回调函数
                     if op == 1:
-                        t, c = pinyin_process_single_file(src, temp_dst, skip_set, self.args.ignore_non_chinese, self.args.py_sep, self.should_stop, progress_cb=_global_progress_cb)
+                        t, c = pinyin_process_single_file(src, temp_dst, skip_set, self.args.ignore_non_chinese, self.args.py_sep, self.args.tone_only, self.should_stop, progress_cb=_global_progress_cb)
                     elif op == 2:
                         t, c = aux_process_single_file(src, temp_dst, self.aux_map or {}, self.args.ignore_non_chinese, self.should_stop, progress_cb=_global_progress_cb)
                     elif op == 3:
@@ -2853,6 +2888,10 @@ class MainWin(AdvancedSettingsMixin, QWidget):
         lay = QVBoxLayout(w)
         hbox1 = QHBoxLayout()
         hbox1.addWidget(self.ignore_non_chinese_cb_py)
+        self.tone_only_cb = QCheckBox("只添加声调（保留原拼音，仅补声调）")
+        self.tone_only_cb.setToolTip("勾选后：已有拼音的词条不重新生成拼音，只根据单字读音补上缺失的声调标记；"
+                                     "当词库原拼音与 pypinyin 读音不一致时（多音字、人名地名、自定义读音等）保持原拼音不变。")
+        hbox1.addWidget(self.tone_only_cb)
         hbox1.addStretch(1)
         lay.addLayout(hbox1)
         self.ignore_non_chinese_cb_py.setChecked(True)
@@ -3369,7 +3408,8 @@ class MainWin(AdvancedSettingsMixin, QWidget):
             args = JobArgs(op=1, in_path=self.in_edit_py.text().strip(), out_path=self.out_edit_py.text().strip(),
                            custom_dir=self.custom_dir_edit.text().strip() or None,
                            skip_set={x.strip() for x in self.skip_edit.toPlainText().splitlines() if x.strip()} if os.path.isdir(self.in_edit_py.text()) else set(DEFAULT_SKIP_SET),
-                           ignore_non_chinese=self.ignore_non_chinese_cb_py.isChecked(), py_sep=self.py_sep_edit.text() or " ")
+                           ignore_non_chinese=self.ignore_non_chinese_cb_py.isChecked(), py_sep=self.py_sep_edit.text() or " ",
+                           tone_only=self.tone_only_cb.isChecked())
         elif cur == 2: # 刷辅助码
             if not self.aux_file_edit.text(): QMessageBox.warning(self, "提示", "请选择辅助码文件"); return
             args = JobArgs(op=2, in_path=self.in_edit_aux.text().strip(), out_path=self.out_edit_aux.text().strip(),
@@ -3440,6 +3480,7 @@ class MainWin(AdvancedSettingsMixin, QWidget):
     def save_settings(self):
         s = self.settings
         s.setValue('py/ignore_non_chinese', self.ignore_non_chinese_cb_py.isChecked())
+        s.setValue('py/tone_only', self.tone_only_cb.isChecked())
         s.setValue('aux/ignore_non_chinese', self.ignore_non_chinese_cb_aux.isChecked())
         s.setValue('py/in', self.in_edit_py.text().strip())
         s.setValue('py/out', self.out_edit_py.text().strip())
@@ -3474,6 +3515,7 @@ class MainWin(AdvancedSettingsMixin, QWidget):
     def restore_settings(self):
         s = self.settings
         self.ignore_non_chinese_cb_py.setChecked(s.value('py/ignore_non_chinese', True, bool))
+        self.tone_only_cb.setChecked(s.value('py/tone_only', False, bool))
         self.ignore_non_chinese_cb_aux.setChecked(s.value('aux/ignore_non_chinese', True, bool))
         self.in_edit_py.setText(s.value('py/in', ''))
         self.out_edit_py.setText(s.value('py/out', ''))
