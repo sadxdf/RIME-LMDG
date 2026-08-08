@@ -2264,6 +2264,7 @@ class MainWin(AdvancedSettingsMixin, QWidget):
 
         self.tabs = QTabWidget()
         self.tab_py = self._build_tab_pinyin()
+        self.tab_tone = self._build_tab_tone()
         self.tab_aux = self._build_tab_aux()
         self.tab_upd = self._build_tab_update()
         self.tab_sp = self._build_tab_shuangpin()
@@ -2273,7 +2274,9 @@ class MainWin(AdvancedSettingsMixin, QWidget):
         self.tabs.addTab(self.tab_upd, "在线更新与部署")
         # 2. 刷拼音 (现在的 Index 1)
         self.tabs.addTab(self.tab_py, "刷新拼音（保留辅助码）")
-        # 3. 刷辅助码 (现在的 Index 2)
+        # 3. 只添加声调 (现在的 Index 2)
+        self.tabs.addTab(self.tab_tone, "只添加声调（保留原拼音）")
+        # 4. 刷辅助码 (现在的 Index 3)
         self.tabs.addTab(self.tab_aux, "刷新辅助码（拼音;辅助码）")
         self.tabs.addTab(self.tab_sp, "双拼编码转换")
         self.tabs.addTab(self.tab_yaml, "高级设置")
@@ -2888,10 +2891,6 @@ class MainWin(AdvancedSettingsMixin, QWidget):
         lay = QVBoxLayout(w)
         hbox1 = QHBoxLayout()
         hbox1.addWidget(self.ignore_non_chinese_cb_py)
-        self.tone_only_cb = QCheckBox("只添加声调（保留原拼音，仅补声调）")
-        self.tone_only_cb.setToolTip("勾选后：已有拼音的词条不重新生成拼音，只根据单字读音补上缺失的声调标记；"
-                                     "当词库原拼音与 pypinyin 读音不一致时（多音字、人名地名、自定义读音等）保持原拼音不变。")
-        hbox1.addWidget(self.tone_only_cb)
         hbox1.addStretch(1)
         lay.addLayout(hbox1)
         self.ignore_non_chinese_cb_py.setChecked(True)
@@ -2942,6 +2941,71 @@ class MainWin(AdvancedSettingsMixin, QWidget):
         p = (self.in_edit_py.text() or "").strip()
         show = os.path.isdir(p)
         self.skip_group.setVisible(show)
+
+    # —— 只添加声调标签页 (Index 2) ——
+    def _build_tab_tone(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        hbox1 = QHBoxLayout()
+        self.ignore_non_chinese_cb_tone = QCheckBox("忽略词组中的非汉字字符（如连字符、空格等）")
+        self.ignore_non_chinese_cb_tone.setToolTip("建议保持不勾选：混合中英文词条（如 Linux系统）需要保留非汉字音节，"
+                                                   "才能与原拼音正确对齐并补声调；纯汉字词库勾不勾选结果一致。")
+        hbox1.addWidget(self.ignore_non_chinese_cb_tone)
+        hbox1.addStretch(1)
+        lay.addLayout(hbox1)
+
+        hbox2 = QHBoxLayout()
+        sep_lbl = QLabel("拼音分隔符：")
+        self.tone_sep_edit = QLineEdit(" ")
+        self.tone_sep_edit.setFixedWidth(50)
+        self.tone_sep_edit.setPlaceholderText("空格")
+        hbox2.addWidget(sep_lbl)
+        hbox2.addWidget(self.tone_sep_edit)
+        hbox2.addStretch(1)
+        lay.addLayout(hbox2)
+
+        tip = QLabel("说明：只给词库已有的拼音补上声调标记，不重新生成拼音。\n"
+                     "当原拼音与 pypinyin 读音不一致时（多音字、人名地名、自定义读音等），保持原拼音不变。")
+        tip.setStyleSheet("color:gray;")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+
+        g = QGroupBox("只添加声调参数（可选自定义拼音目录，目录内txt文本格式为：词组\\t拼音）")
+        f = QFormLayout(g)
+        self.tone_in_edit = PathEdit("拖拽或选择：词表文件/目录（.txt/.yaml）")
+        self.tone_out_edit = PathEdit("拖拽或选择：输出文件/目录")
+        self.tone_custom_dir_edit = PathEdit("可放 custom_single.txt / custom_phrase.txt，或混放 .txt/.yaml；\n格式：词组\\t拼音（单字同理）")
+
+        b_in = QPushButton("选择…");  b_in.clicked.connect(lambda: self.pick_any(self.tone_in_edit, True))
+        b_out = QPushButton("选择…"); b_out.clicked.connect(lambda: self.pick_output(self.tone_out_edit))
+        b_custom = QPushButton("选择…"); b_custom.clicked.connect(lambda: self.pick_dir(self.tone_custom_dir_edit))
+        row_in = QHBoxLayout(); row_in.addWidget(self.tone_in_edit); row_in.addWidget(b_in)
+        row_out = QHBoxLayout(); row_out.addWidget(self.tone_out_edit); row_out.addWidget(b_out)
+        row_c = QHBoxLayout(); row_c.addWidget(self.tone_custom_dir_edit); row_c.addWidget(b_custom)
+        f.addRow("输入路径：", self._wrap(row_in))
+        f.addRow("输出路径：", self._wrap(row_out))
+        f.addRow("自定义拼音目录（可选）：", self._wrap(row_c))
+
+        self.tone_skip_group = QGroupBox("排除文件名（仅在输入路径为目录时生效）")
+        skip_lay = QVBoxLayout(self.tone_skip_group)
+        self.tone_skip_edit = QPlainTextEdit()
+        self.tone_skip_edit.setPlaceholderText("每行一个文件名")
+        self.tone_skip_edit.setPlainText("\n".join(sorted(DEFAULT_SKIP_SET)))
+        skip_tip = QLabel("说明：当输入为目录时，这些文件将被原样复制，不做拼音处理。")
+        skip_tip.setStyleSheet("color:gray;")
+        skip_lay.addWidget(self.tone_skip_edit)
+        skip_lay.addWidget(skip_tip)
+
+        self.tone_in_edit.textChanged.connect(self._toggle_tone_skip_box)
+        self._toggle_tone_skip_box()
+        lay.addWidget(g)
+        lay.addWidget(self.tone_skip_group)
+        return w
+
+    def _toggle_tone_skip_box(self):
+        p = (self.tone_in_edit.text() or "").strip()
+        show = os.path.isdir(p)
+        self.tone_skip_group.setVisible(show)
 
     def _build_tab_aux(self) -> QWidget:
         w = QWidget()
@@ -3408,13 +3472,18 @@ class MainWin(AdvancedSettingsMixin, QWidget):
             args = JobArgs(op=1, in_path=self.in_edit_py.text().strip(), out_path=self.out_edit_py.text().strip(),
                            custom_dir=self.custom_dir_edit.text().strip() or None,
                            skip_set={x.strip() for x in self.skip_edit.toPlainText().splitlines() if x.strip()} if os.path.isdir(self.in_edit_py.text()) else set(DEFAULT_SKIP_SET),
-                           ignore_non_chinese=self.ignore_non_chinese_cb_py.isChecked(), py_sep=self.py_sep_edit.text() or " ",
-                           tone_only=self.tone_only_cb.isChecked())
-        elif cur == 2: # 刷辅助码
+                           ignore_non_chinese=self.ignore_non_chinese_cb_py.isChecked(), py_sep=self.py_sep_edit.text() or " ")
+        elif cur == 2: # 只添加声调
+            args = JobArgs(op=1, in_path=self.tone_in_edit.text().strip(), out_path=self.tone_out_edit.text().strip(),
+                           custom_dir=self.tone_custom_dir_edit.text().strip() or None,
+                           skip_set={x.strip() for x in self.tone_skip_edit.toPlainText().splitlines() if x.strip()} if os.path.isdir(self.tone_in_edit.text()) else set(DEFAULT_SKIP_SET),
+                           ignore_non_chinese=self.ignore_non_chinese_cb_tone.isChecked(), py_sep=self.tone_sep_edit.text() or " ",
+                           tone_only=True)
+        elif cur == 3: # 刷辅助码
             if not self.aux_file_edit.text(): QMessageBox.warning(self, "提示", "请选择辅助码文件"); return
             args = JobArgs(op=2, in_path=self.in_edit_aux.text().strip(), out_path=self.out_edit_aux.text().strip(),
                            aux_file=self.aux_file_edit.text().strip(), ignore_non_chinese=self.ignore_non_chinese_cb_aux.isChecked())
-        elif cur == 3: # 双拼转换
+        elif cur == 4: # 双拼转换
             sp_keys = list(SHUANGPIN_SCHEMAS.keys())
             sel_id = self.bg_sp.checkedId()
             if sel_id < 0 or sel_id >= len(sp_keys): return
@@ -3454,7 +3523,8 @@ class MainWin(AdvancedSettingsMixin, QWidget):
         self.worker.done_sig.connect(lambda ok, msg, s: (self.btn_run.setEnabled(True), self.btn_stop.setEnabled(False), self.log.appendPlainText(msg)))
         
         self.btn_run.setEnabled(False); self.btn_stop.setEnabled(True)
-        self.log.appendPlainText(f"开始任务: {'双拼编码转换' if cur==3 else '处理'}")
+        task_name = {1: "刷新拼音", 2: "只添加声调", 3: "刷新辅助码", 4: "双拼编码转换"}.get(cur, "处理")
+        self.log.appendPlainText(f"开始任务: {task_name}")
         self.log.appendPlainText(f"输入：{args.in_path}")
         self.log.appendPlainText(f"输出：{args.out_path}")
         self.save_settings()
@@ -3480,12 +3550,17 @@ class MainWin(AdvancedSettingsMixin, QWidget):
     def save_settings(self):
         s = self.settings
         s.setValue('py/ignore_non_chinese', self.ignore_non_chinese_cb_py.isChecked())
-        s.setValue('py/tone_only', self.tone_only_cb.isChecked())
         s.setValue('aux/ignore_non_chinese', self.ignore_non_chinese_cb_aux.isChecked())
         s.setValue('py/in', self.in_edit_py.text().strip())
         s.setValue('py/out', self.out_edit_py.text().strip())
         s.setValue('py/custom', self.custom_dir_edit.text().strip())
         s.setValue('py/skip', self.skip_edit.toPlainText())
+        s.setValue('tone/ignore_non_chinese', self.ignore_non_chinese_cb_tone.isChecked())
+        s.setValue('tone/in', self.tone_in_edit.text().strip())
+        s.setValue('tone/out', self.tone_out_edit.text().strip())
+        s.setValue('tone/custom', self.tone_custom_dir_edit.text().strip())
+        s.setValue('tone/sep', self.tone_sep_edit.text())
+        s.setValue('tone/skip', self.tone_skip_edit.toPlainText())
         s.setValue('aux/in', self.in_edit_aux.text().strip())
         s.setValue('aux/out', self.out_edit_aux.text().strip())
         s.setValue('aux/file', self.aux_file_edit.text().strip())
@@ -3515,13 +3590,19 @@ class MainWin(AdvancedSettingsMixin, QWidget):
     def restore_settings(self):
         s = self.settings
         self.ignore_non_chinese_cb_py.setChecked(s.value('py/ignore_non_chinese', True, bool))
-        self.tone_only_cb.setChecked(s.value('py/tone_only', False, bool))
         self.ignore_non_chinese_cb_aux.setChecked(s.value('aux/ignore_non_chinese', True, bool))
         self.in_edit_py.setText(s.value('py/in', ''))
         self.out_edit_py.setText(s.value('py/out', ''))
         self.custom_dir_edit.setText(s.value('py/custom', ''))
         default_skip = "\n".join(sorted(DEFAULT_SKIP_SET))
         self.skip_edit.setPlainText(s.value('py/skip', default_skip))
+        self.ignore_non_chinese_cb_tone.setChecked(s.value('tone/ignore_non_chinese', False, bool))
+        self.tone_in_edit.setText(s.value('tone/in', ''))
+        self.tone_out_edit.setText(s.value('tone/out', ''))
+        self.tone_custom_dir_edit.setText(s.value('tone/custom', ''))
+        self.tone_sep_edit.setText(s.value('tone/sep', ' '))
+        self.tone_skip_edit.setPlainText(s.value('tone/skip', default_skip))
+        self._toggle_tone_skip_box()
         self.in_edit_aux.setText(s.value('aux/in', ''))
         self.out_edit_aux.setText(s.value('aux/out', ''))
         self.aux_file_edit.setText(s.value('aux/file', ''))
@@ -3589,6 +3670,13 @@ class MainWin(AdvancedSettingsMixin, QWidget):
         self.py_sep_edit.setText(" ")
         self.skip_edit.setPlainText("\n".join(sorted(DEFAULT_SKIP_SET)))
         self._toggle_skip_box()
+        self.ignore_non_chinese_cb_tone.setChecked(False)
+        self.tone_in_edit.clear()
+        self.tone_out_edit.clear()
+        self.tone_custom_dir_edit.clear()
+        self.tone_sep_edit.setText(" ")
+        self.tone_skip_edit.setPlainText("\n".join(sorted(DEFAULT_SKIP_SET)))
+        self._toggle_tone_skip_box()
         self.ignore_non_chinese_cb_aux.setChecked(True)
         self.in_edit_aux.clear()
         self.out_edit_aux.clear()
